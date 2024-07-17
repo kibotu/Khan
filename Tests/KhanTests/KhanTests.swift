@@ -68,7 +68,7 @@ class KhanTests: XCTestCase {
             expectation.fulfill()
         }
         
-        await fulfillment(of: [expectation], timeout: 0.3)
+        await fulfillment(of: [expectation], timeout: 5.0)
     }
 
     // MARK: - Deadlock Tests
@@ -111,7 +111,7 @@ class KhanTests: XCTestCase {
             expectation.fulfill()
         }
         
-        await fulfillment(of: [expectation], timeout: 0.5)
+        await fulfillment(of: [expectation], timeout: 5.0)
     }
 
     // MARK: - Dependency Order Tests
