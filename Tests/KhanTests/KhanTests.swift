@@ -109,14 +109,13 @@ final class KhanTests: XCTestCase {
     }
 
     func testSiblingsOfSlowInitializerAreNotBlocked() async throws {
-        enum Slow: Probe { static let delay: Duration = .milliseconds(300) }
+        enum Blocked: Initializer {
+            static func embark() async throws { try await recorder.waitFor("end:AfterOther") }
+        }
         enum Other: Probe {}
         enum AfterOther: Probe { static let dependencies: [Initializer.Type] = [Other.self] }
 
-        try await Khan(initializers: [Slow.self, Other.self, AfterOther.self]).conquer()
-
-        let events = await recorder.events
-        XCTAssertLessThan(index(of: "end:AfterOther", in: events), index(of: "end:Slow", in: events))
+        try await Khan(initializers: [Blocked.self, Other.self, AfterOther.self]).conquer()
     }
 
     // MARK: - Failure
@@ -153,6 +152,24 @@ final class KhanTests: XCTestCase {
 
         let events = await recorder.events
         XCTAssertTrue(events.contains("end:Slow"))
+    }
+
+    func testCancellationStopsLaunchingDependents() async throws {
+        enum Long: Probe { static let delay: Duration = .seconds(10) }
+        enum Child: Probe { static let dependencies: [Initializer.Type] = [Long.self] }
+        let khan = try Khan(initializers: [Long.self, Child.self])
+
+        let task = Task { try await khan.conquer() }
+        try await recorder.waitFor("start:Long")
+        task.cancel()
+
+        do {
+            try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {}
+
+        let events = await recorder.events
+        XCTAssertEqual(events, ["start:Long"])
     }
 
     // MARK: - Validation
@@ -231,6 +248,15 @@ private final class LockedBox<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: T
     init(_ value: T) { storage = value }
-    var value: T { lock.withLock { storage } }
-    func mutate(_ body: (inout T) -> Void) { lock.withLock { body(&storage) } }
+    var value: T {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func mutate(_ body: (inout T) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        body(&storage)
+    }
 }

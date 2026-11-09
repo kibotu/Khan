@@ -49,19 +49,22 @@ public struct Khan {
 
     /// Runs all initializers, starting each as soon as its dependencies succeeded.
     ///
-    /// - Throws: ``KhanError/failed(_:skipped:)``.
+    /// Every call runs every initializer again. Once the calling task is cancelled, no further
+    /// initializers start; running ones are expected to honor cancellation.
+    ///
+    /// - Throws: `CancellationError` if the calling task was cancelled, otherwise ``KhanError/failed(_:skipped:)``.
     public func conquer() async throws {
         let clock = ContinuousClock()
         let start = clock.now
         var pending = dependencies.map(\.count)
-        var succeeded = Set<Int>()
+        var finished = Set<Int>()
         var failures: [KhanError.Failure] = []
 
         await withTaskGroup(of: (Int, Error?).self) { group in
             func launch(_ node: Int) {
                 let type = types[node]
                 let logger = logger
-                group.addTask {
+                _ = group.addTaskUnlessCancelled {
                     let begin = clock.now
                     do {
                         try await type.embark()
@@ -77,11 +80,11 @@ public struct Khan {
             for node in pending.indices where pending[node] == 0 { launch(node) }
 
             while let (node, error) = await group.next() {
+                finished.insert(node)
                 if let error {
                     failures.append(.init(initializer: types[node], error: error))
                     continue
                 }
-                succeeded.insert(node)
                 for dependent in dependents[node] {
                     pending[dependent] -= 1
                     if pending[dependent] == 0 { launch(dependent) }
@@ -90,10 +93,10 @@ public struct Khan {
         }
 
         logger?("conquered in \(start.duration(to: clock.now).milliseconds)ms")
+        try Task.checkCancellation()
         guard failures.isEmpty else {
-            let failed = Set(failures.map { ObjectIdentifier($0.initializer) })
-            let skipped = types.indices.filter { !succeeded.contains($0) && !failed.contains(ObjectIdentifier(types[$0])) }
-            throw KhanError.failed(failures, skipped: skipped.map { types[$0] })
+            let skipped = types.indices.filter { !finished.contains($0) }.map { types[$0] }
+            throw KhanError.failed(failures, skipped: skipped)
         }
     }
 

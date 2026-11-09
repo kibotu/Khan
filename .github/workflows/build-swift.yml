@@ -1,21 +1,23 @@
 name: Swift
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
-  build:
-    name: Swift ${{ matrix.swift }} on ${{ matrix.os }}
+  test:
+    name: Test on ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest]
-        swift: ["5.10"]
+        # macos-14 ships Swift 5.10 (minimum supported), macos-latest the current toolchain
+        os: [macos-14, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: ${{ matrix.swift }}
       - uses: actions/checkout@v4
-      - name: Build
-        run: swift build
-      - name: Run tests
-        run: swift test
+      - run: swift --version
+      - run: swift test
+
+  ios:
+    name: Build for iOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: xcodebuild build -scheme Khan -destination 'generic/platform=iOS' -quiet
