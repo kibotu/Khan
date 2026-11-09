@@ -1,7 +1,7 @@
 # Khan for iOS
 [![Build](https://github.com/kibotu/Khan/actions/workflows/build-swift.yml/badge.svg)](https://github.com/kibotu/Khan/actions/workflows/build-swift.yml) [![GitHub Tag](https://img.shields.io/github/v/tag/kibotu/Khan?include_prereleases&sort=semver)](https://github.com/kibotu/Khan/releases) ![Static Badge](https://img.shields.io/badge/Platform%20-%20iOS%20-%20light_green)
 [![Static Badge](https://img.shields.io/badge/iOS%20-%20%3E%2016.0%20-%20light_green)](https://support.apple.com/en-us/101566)
-[![Static Badge](https://img.shields.io/badge/Swift%205.10%20-%20orange)](https://www.swift.org/blog/swift-5.10-released/)
+[![Static Badge](https://img.shields.io/badge/Swift%206%20-%20orange)](https://www.swift.org/blog/swift-6-released/)
 
 Khan starts your app's modules in parallel while guaranteeing that every initializer runs only after the ones it depends on.
 
@@ -59,8 +59,8 @@ Add the dependency to your `Package.swift`
 ## Requirements
 
 - iOS 16.0 or later (macOS 13 for running the tests)
-- Xcode 15.0 or later
-- Swift 5.10 or later
+- Xcode 16.0 or later
+- Swift 6.0 or later
 
 Contributions welcome!
 
