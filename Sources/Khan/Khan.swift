@@ -1,3 +1,5 @@
+import Dispatch
+
 /// Runs initializers as soon as their dependencies have finished, in parallel where the graph allows.
 ///
 /// ```swift
@@ -54,8 +56,7 @@ public struct Khan {
     ///
     /// - Throws: `CancellationError` if the calling task was cancelled, otherwise ``KhanError/failed(_:skipped:)``.
     public func conquer() async throws {
-        let clock = ContinuousClock()
-        let start = clock.now
+        let start = DispatchTime.now()
         var pending = dependencies.map(\.count)
         var finished = Set<Int>()
         var failures: [KhanError.Failure] = []
@@ -65,13 +66,13 @@ public struct Khan {
                 let type = types[node]
                 let logger = logger
                 _ = group.addTaskUnlessCancelled {
-                    let begin = clock.now
+                    let begin = DispatchTime.now()
                     do {
                         try await type.embark()
-                        logger?("\(type) done in \(begin.duration(to: clock.now).milliseconds)ms")
+                        logger?("\(type) done in \(begin.millisecondsUntilNow)ms")
                         return (node, nil)
                     } catch {
-                        logger?("\(type) failed in \(begin.duration(to: clock.now).milliseconds)ms: \(error)")
+                        logger?("\(type) failed in \(begin.millisecondsUntilNow)ms: \(error)")
                         return (node, error)
                     }
                 }
@@ -92,7 +93,7 @@ public struct Khan {
             }
         }
 
-        logger?("conquered in \(start.duration(to: clock.now).milliseconds)ms")
+        logger?("conquered in \(start.millisecondsUntilNow)ms")
         try Task.checkCancellation()
         guard failures.isEmpty else {
             let skipped = types.indices.filter { !finished.contains($0) }.map { types[$0] }
@@ -127,8 +128,8 @@ public struct Khan {
     }
 }
 
-private extension Duration {
-    var milliseconds: Int {
-        Int(components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000)
+private extension DispatchTime {
+    var millisecondsUntilNow: Int {
+        Int((DispatchTime.now().uptimeNanoseconds - uptimeNanoseconds) / 1_000_000)
     }
 }

@@ -1,3 +1,4 @@
+import Dispatch
 import XCTest
 @testable import Khan
 
@@ -7,11 +8,11 @@ private actor Recorder {
     func record(_ event: String) { events.append(event) }
     func reset() { events = [] }
 
-    func waitFor(_ event: String, timeout: Duration = .seconds(2)) async throws {
-        let deadline = ContinuousClock.now + timeout
+    func waitFor(_ event: String, timeout: UInt64 = 2_000_000_000) async throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeout
         while !events.contains(event) {
-            guard ContinuousClock.now < deadline else { throw TestError.timeout(event) }
-            try await Task.sleep(for: .milliseconds(5))
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw TestError.timeout(event) }
+            try await Task.sleep(nanoseconds: 5_000_000)
         }
     }
 }
@@ -25,16 +26,16 @@ private enum TestError: Error, Equatable {
 
 /// Records `start:`/`end:` events around an optional delay.
 private protocol Probe: Initializer {
-    static var delay: Duration { get }
+    static var delay: UInt64 { get }
 }
 
 private extension Probe {
-    static var delay: Duration { .zero }
+    static var delay: UInt64 { 0 }
     static var name: String { String(describing: self).split(separator: ".").last.map(String.init)! }
 
     static func embark() async throws {
         await recorder.record("start:\(name)")
-        try await Task.sleep(for: delay)
+        try await Task.sleep(nanoseconds: delay)
         await recorder.record("end:\(name)")
     }
 }
@@ -64,7 +65,7 @@ final class KhanTests: XCTestCase {
     }
 
     func testDependentStartsOnlyAfterSlowDependencyEnds() async throws {
-        enum Slow: Probe { static let delay: Duration = .milliseconds(150) }
+        enum Slow: Probe { static let delay: UInt64 = 150_000_000 }
         enum Fast: Probe {}
         enum Child: Probe { static let dependencies: [Initializer.Type] = [Slow.self, Fast.self] }
 
@@ -143,7 +144,7 @@ final class KhanTests: XCTestCase {
 
     func testFailureStillLetsRunningSiblingsFinish() async throws {
         enum Boom: Initializer { static func embark() async throws { throw TestError.boom } }
-        enum Slow: Probe { static let delay: Duration = .milliseconds(100) }
+        enum Slow: Probe { static let delay: UInt64 = 100_000_000 }
 
         do {
             try await Khan(initializers: [Boom.self, Slow.self]).conquer()
@@ -155,7 +156,7 @@ final class KhanTests: XCTestCase {
     }
 
     func testCancellationStopsLaunchingDependents() async throws {
-        enum Long: Probe { static let delay: Duration = .seconds(10) }
+        enum Long: Probe { static let delay: UInt64 = 10_000_000_000 }
         enum Child: Probe { static let dependencies: [Initializer.Type] = [Long.self] }
         let khan = try Khan(initializers: [Long.self, Child.self])
 
