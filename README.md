@@ -49,7 +49,7 @@ Add the dependency to your `Package.swift`
       ...
     ]
     dependencies: [
-        .package(url: "https://github.com/kibotu/Khan", from: "1.0.0"),
+        .package(url: "https://github.com/kibotu/Khan", from: "<version>"),
     ],
     targets: [
       ...
