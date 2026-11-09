@@ -1,196 +1,134 @@
-import Foundation
-
-/// A dependency management and initialization system for modular app components.
-///
-/// The `Khan` class provides a robust solution for managing and initializing app components
-/// with complex dependency relationships. It uses a topological sorting algorithm to determine
-/// the correct order of initialization, ensuring that all dependencies are properly satisfied.
-///
-/// - Important: This class detects and prevents circular dependencies, which could lead to
-///   initialization deadlocks.
-///
-/// # Usage
+/// Runs initializers as soon as their dependencies have finished, in parallel where the graph allows.
 ///
 /// ```swift
-/// let initializers: [Initializer.Type] = [
-///     DatabaseInitializer.self,
-///     NetworkingInitializer.self,
-///     AnalyticsInitializer.self
-/// ]
-///
-/// do {
-///     let khan = try Khan(initializers: initializers)
-///     try await khan.conquer()
-/// } catch {
-///     print("Initialization failed: \(error)")
-/// }
+/// let khan = try Khan(initializers: [DatabaseInitializer.self, NetworkInitializer.self])
+/// try await khan.conquer()
 /// ```
 ///
-/// # Features
-///
-/// - Dependency graph construction and validation
-/// - Circular dependency detection
-/// - Optional parallel initialization for improved performance
-/// - Debug mode shuffling to detect order-dependent issues early
-/// - Comprehensive logging for debugging and monitoring
-///
-/// # Note
-///
-/// The name "Khan" and related conquest terminology are used metaphorically,
-/// representing the system's ability to "conquer" complex initialization challenges.
-class Khan {
-    
-    /// Determines whether logging is enabled for this instance.
-    ///
-    /// This property uses the `@Storage` property wrapper, likely for persistent storage.
-    /// The default value is `true`.
-    var enableLogging: Bool = true
-    
-    private var initializers: [AnyInitializer]
-    private var dependencyGraph: [AnyInitializer: [AnyInitializer]] = [:]
-    private var inDegree: [AnyInitializer: Int] = [:]
-    private var visited: Set<AnyInitializer> = []
-    private var recursionStack: Set<AnyInitializer> = []
+/// The graph is validated on creation, so missing dependencies and cycles throw from `init`.
+/// If an initializer throws, its transitive dependents are skipped, unrelated initializers still
+/// run, and ``conquer()`` throws ``KhanError/failed(_:skipped:)`` once everything else settled.
+public struct Khan {
+    private let types: [Initializer.Type]
+    private let dependencies: [[Int]]
+    private let dependents: [[Int]]
+    private let logger: (@Sendable (String) -> Void)?
 
-    /// Creates a new `Khan` instance with the specified initializers.
-    ///
     /// - Parameters:
-    ///   - initializers: An array of `Initializer.Type` objects representing the app components
-    ///                   to be initialized. Default is an empty array.
-    ///
-    /// - Throws: An error if circular dependencies are detected during graph construction.
-    init(initializers: [Initializer.Type] = []) throws {
-        #if DEBUG
-        // we shuffle in debug to detect order issues earlier
-        self.initializers = initializers.shuffled().map { AnyInitializer($0) }
-        #else
-        self.initializers = initializers.map { AnyInitializer($0) }
-        #endif
-        try buildDependencyGraph()
-        
-//        printDependencyTree()
-    }
+    ///   - initializers: Every initializer to run, including all transitive dependencies. Duplicates are ignored.
+    ///   - logger: Receives one line per finished initializer and the total duration.
+    /// - Throws: ``KhanError/missingDependency(_:dependency:)`` or ``KhanError/cycle(_:)``.
+    public init(initializers: [Initializer.Type], logger: (@Sendable (String) -> Void)? = nil) throws {
+        var index: [ObjectIdentifier: Int] = [:]
+        var types: [Initializer.Type] = []
+        for type in initializers where index[ObjectIdentifier(type)] == nil {
+            index[ObjectIdentifier(type)] = types.count
+            types.append(type)
+        }
 
-    private func buildDependencyGraph() throws {
-        for initializer in initializers {
-            dependencyGraph[initializer] = initializer.type.dependencies.map { AnyInitializer($0) }
-            inDegree[initializer] = 0
-        }
-        
-        for (_, deps) in dependencyGraph {
-            for dep in deps {
-                inDegree[dep, default: 0] += 1
-            }
-        }
-        
-        for initializer in initializers {
-            if !visited.contains(initializer) {
-                try dfs(initializer)
-            }
-        }
-    }
-
-    private func dfs(_ node: AnyInitializer) throws {
-        visited.insert(node)
-        recursionStack.insert(node)
-        
-        if let dependencies = dependencyGraph[node] {
-            for dependency in dependencies {
-                if !visited.contains(dependency) {
-                    try dfs(dependency)
-                } else if recursionStack.contains(dependency) {
-                    throw NSError(domain: "CyclicDependencyError", code: 1, userInfo: ["cycle": "\(node.type) -> \(dependency.type)"])
+        let dependencies = try types.map { type in
+            try Set(type.dependencies.map { dependency in
+                guard let i = index[ObjectIdentifier(dependency)] else {
+                    throw KhanError.missingDependency(type, dependency: dependency)
                 }
-            }
+                return i
+            }).sorted()
         }
-        
-        recursionStack.remove(node)
+        try Self.rejectCycles(in: dependencies, types: types)
+
+        var dependents = [[Int]](repeating: [], count: types.count)
+        for (node, deps) in dependencies.enumerated() {
+            for dep in deps { dependents[dep].append(node) }
+        }
+
+        self.types = types
+        self.dependencies = dependencies
+        self.dependents = dependents
+        self.logger = logger
     }
-    
-    /// Executes the initialization process for all registered components.
+
+    /// Runs all initializers, starting each as soon as its dependencies succeeded.
     ///
-    /// This method performs a topological sort on the dependency graph and then
-    /// initializes each component in the correct order. If `runParallel` was set to `true`
-    /// during initialization, it will attempt to run initializers concurrently where possible.
+    /// Every call runs every initializer again. Once the calling task is cancelled, no further
+    /// initializers start; running ones are expected to honor cancellation.
     ///
-    /// - Throws: An error if any initializer fails or if circular dependencies are detected.
-    func conquer() async throws {
-        // Queue of nodes with no incoming edges (dependencies)
-        var zeroInDegreeQueue: [AnyInitializer] = inDegree.filter { $0.value == 0 }.map { $0.key }
-        // List to store the order of initialisation
-        var sortedInitializers: [AnyInitializer] = []
-        
-        while !zeroInDegreeQueue.isEmpty {
-            let current = zeroInDegreeQueue.removeFirst()
-            sortedInitializers.append(current)
-            
-            if let dependencies = dependencyGraph[current] {
-                for dep in dependencies {
-                    inDegree[dep]! -= 1
-                    if inDegree[dep]! == 0 {
-                        zeroInDegreeQueue.append(dep)
+    /// - Throws: `CancellationError` if the calling task was cancelled, otherwise ``KhanError/failed(_:skipped:)``.
+    public func conquer() async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        var pending = dependencies.map(\.count)
+        var finished = Set<Int>()
+        var failures: [KhanError.Failure] = []
+
+        await withTaskGroup(of: (Int, Error?).self) { group in
+            func launch(_ node: Int) {
+                let type = types[node]
+                let logger = logger
+                _ = group.addTaskUnlessCancelled {
+                    let begin = clock.now
+                    do {
+                        try await type.embark()
+                        logger?("\(type) done in \(begin.duration(to: clock.now).milliseconds)ms")
+                        return (node, nil)
+                    } catch {
+                        logger?("\(type) failed in \(begin.duration(to: clock.now).milliseconds)ms: \(error)")
+                        return (node, error)
                     }
                 }
             }
-        }
-            
-        // Check if topological sort includes all nodes
-        if sortedInitializers.count != initializers.count {
-            throw NSError(domain: "CircularDependencyError", code: 2, userInfo: nil)
-        }
-        
-        let sortedListReversed = sortedInitializers.reversed().map { $0.type }
-        
-        let startTime = Date()
-        // Execute initializers in topological order
-        try await runInitializers(sortedInitializers: sortedListReversed)
-        log("[conquered] in \(startTime.dt)", "👑")
-    }
 
-    private func runInitializers(sortedInitializers: [Initializer.Type]) async throws {
-        var errors: [Error] = []
+            for node in pending.indices where pending[node] == 0 { launch(node) }
 
-        for initializer in sortedInitializers {
-            do {
-                let startTime = Date()
-                try await initializer.embark()
-                log("[\(initializer.self)][vanquished] \(startTime.dt)", "⚔️")
-            } catch {
-                errors.append(error)
+            while let (node, error) = await group.next() {
+                finished.insert(node)
+                if let error {
+                    failures.append(.init(initializer: types[node], error: error))
+                    continue
+                }
+                for dependent in dependents[node] {
+                    pending[dependent] -= 1
+                    if pending[dependent] == 0 { launch(dependent) }
+                }
             }
         }
 
-        if !errors.isEmpty {
-            throw NSError(domain: "[Khan] InitialisationError", code: 3, userInfo: ["errors": errors])
-        }
-    }
-    
-    /// Prints a visual representation of the dependency tree.
-    ///
-    /// This method is useful for debugging and understanding the structure of your
-    /// initialization graph. It will only output if logging is enabled.
-    func printDependencyTree() {
-        log("Dependency Tree:")
-        for initializer in initializers where inDegree[initializer] == 0 {
-            // Start with initializers that have no dependencies (roots of the trees)
-            printDependencyTreeNode(initializer, indentLevel: 0)
+        logger?("conquered in \(start.duration(to: clock.now).milliseconds)ms")
+        try Task.checkCancellation()
+        guard failures.isEmpty else {
+            let skipped = types.indices.filter { !finished.contains($0) }.map { types[$0] }
+            throw KhanError.failed(failures, skipped: skipped)
         }
     }
 
-    private func printDependencyTreeNode(_ initializer: AnyInitializer, indentLevel: Int) {
-        let indent = String(repeating: "    ", count: indentLevel) // 4 spaces per indent level
-        log("\(indent)- \(initializer.type)")
+    private static func rejectCycles(in dependencies: [[Int]], types: [Initializer.Type]) throws {
+        enum State { case unvisited, visiting, done }
+        var state = [State](repeating: .unvisited, count: dependencies.count)
+        var path: [Int] = []
 
-        if let dependencies = dependencyGraph[initializer] {
-            for dependency in dependencies {
-                printDependencyTreeNode(dependency, indentLevel: indentLevel + 1)
+        func visit(_ node: Int) throws {
+            state[node] = .visiting
+            path.append(node)
+            for dep in dependencies[node] {
+                switch state[dep] {
+                case .unvisited:
+                    try visit(dep)
+                case .visiting:
+                    let cycle = path[path.firstIndex(of: dep)!...] + [dep]
+                    throw KhanError.cycle(cycle.map { types[$0] })
+                case .done:
+                    break
+                }
             }
+            path.removeLast()
+            state[node] = .done
         }
+
+        for node in dependencies.indices where state[node] == .unvisited { try visit(node) }
     }
-    
-    private func log(_ message: String, _ icon: Character? = nil) {
-        if enableLogging {
-            print("\(String(describing: icon)) [Kahn]\(message)")
-        }
+}
+
+private extension Duration {
+    var milliseconds: Int {
+        Int(components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000)
     }
 }

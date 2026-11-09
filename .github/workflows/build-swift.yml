@@ -1,21 +1,46 @@
 name: Swift
 
-on: [push]
+on:
+  push:
+    branches: [master]
+  pull_request:
 
 jobs:
   build:
-    name: Swift ${{ matrix.swift }} on ${{ matrix.os }}
+    name: macOS 27 / Xcode latest on ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest]
-        swift: ["5.10"]
+        os: [xcode-27]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: swift-actions/setup-swift@v2
+      - uses: actions/checkout@v7
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
         with:
-          swift-version: ${{ matrix.swift }}
-      - uses: actions/checkout@v4
-      - name: Build
+          xcode-version: 'latest'
+
+      - name: Log toolchain versions
+        run: |
+          echo "== macOS =="
+          sw_vers
+          echo "== Xcode =="
+          xcodebuild -version
+          xcode-select -p
+          echo "== Swift =="
+          swift --version
+          echo "== iOS simulator runtimes =="
+          xcrun simctl list runtimes | grep -E '^iOS'
+
+      - name: Build (macOS)
         run: swift build
-      - name: Run tests
+
+      - name: Test (macOS)
         run: swift test
+
+      - name: Test on iPhone 18 Pro (iOS latest)
+        run: |
+          xcodebuild \
+            -scheme Khan \
+            -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=latest' \
+            test
