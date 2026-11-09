@@ -1,42 +1,26 @@
-/// A protocol defining the interface for initializable components in the application.
-///
-/// The `Initializer` protocol is a key part of the dependency management system.
-/// It allows components to declare their dependencies and provide an initialization method.
-///
-/// # Usage
-///
-/// Conform your component's initializer to this protocol:
+/// A unit of app start-up work that may declare other initializers it must run after.
 ///
 /// ```swift
-/// class DatabaseInitializer: Initializer {
-///     static var dependencies: [Initializer.Type] = [ConfigurationInitializer.self]
+/// enum DatabaseInitializer: Initializer {
+///     static let dependencies: [Initializer.Type] = [ConfigInitializer.self]
 ///
 ///     static func embark() async throws {
-///         // Initialize database connection
+///         // open the database
 ///     }
 /// }
 /// ```
 ///
-/// # Note
-///
-/// The term "embark" is used metaphorically, representing the start of the initialization process.
-protocol Initializer {
-    /// An array of initializer types that this initializer depends on.
+/// Annotate `embark()` with `@MainActor` if the work must run on the main thread.
+public protocol Initializer: Sendable {
+    /// Initializers that must finish successfully before this one starts.
     ///
-    /// Use this property to declare other components that must be initialized
-    /// before this one. The dependency management system will use this information
-    /// to determine the correct initialization order.
-    ///
-    /// - Important: Avoid circular dependencies, as they will cause initialization to fail.
+    /// Every dependency must also be passed to ``Khan``.
     static var dependencies: [Initializer.Type] { get }
 
-    /// Performs the actual initialization of the component.
-    ///
-    /// This method is called by the dependency management system when it's this
-    /// component's turn to initialize. It's marked as `async` and `throws`, allowing
-    /// for asynchronous operations and error handling during initialization.
-    ///
-    /// - Throws: Any error that occurs during the initialization process.
-    ///           These errors will be caught and handled by the dependency management system.
+    /// Performs the work. Runs concurrently with unrelated initializers.
     static func embark() async throws
+}
+
+public extension Initializer {
+    static var dependencies: [Initializer.Type] { [] }
 }
